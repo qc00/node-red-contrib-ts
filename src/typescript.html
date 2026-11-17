@@ -89,6 +89,11 @@
                 <label for="node-input-useVm" style="width:70%;" title="Use VM instead of Function constructor (slower but more secure)">Use VM mode (slower but more secure)</label>
             </div>
 
+            <div class="form-row">
+                <label for="node-input-tsconfig"><i class="fa fa-sliders"></i> tsconfig</label>
+                <input type="text" id="node-input-tsconfig">
+            </div>
+
             <div class="form-row node-input-libs-row hide node-text-editor-row" style="position:relative; margin-top: 10px;">
                 <label for="node-input-declare" style="width: 200px;"><i class="fa fa-code"></i> Type Declarations</label>
                 <div style="height: 70px; min-height:70px;" class="node-text-editor" id="node-input-declare-editor"></div>
@@ -133,6 +138,45 @@
         </div>
 
     </div>
+</script>
+
+<script type="text/html" data-template-name="typescript-config">
+    <input type="hidden" id="node-config-input-tsconfig">
+    <div class="form-row">
+        <label for="node-config-input-name"><i class="fa fa-tag"></i> <span data-i18n="node-red:common.label.name"></span></label>
+        <input type="text" id="node-config-input-name" data-i18n="[placeholder]node-red:common.label.name">
+    </div>
+    <div class="form-row">
+        <input type="checkbox" id="node-config-input-persistentService" style="display:inline-block; width:auto; vertical-align:top;">
+        <label for="node-config-input-persistentService" style="width:auto;">Keep the TypeScript worker running (uses more RAM, faster deploys and dialogs)</label>
+    </div>
+    <div class="form-row">
+        <label for="node-config-input-idleTimeoutSeconds" style="width:auto; margin-right: 8px;"><i class="fa fa-clock-o"></i> Stop idle worker after</label>
+        <input type="text" id="node-config-input-idleTimeoutSeconds" style="width: 70px;" placeholder="30"> seconds
+    </div>
+    <div class="form-row">
+        <label for="node-config-input-maxHeapMb" style="width:auto; margin-right: 8px;"><i class="fa fa-microchip"></i> Worker heap limit</label>
+        <input type="text" id="node-config-input-maxHeapMb" style="width: 70px;" placeholder="none"> MB
+    </div>
+    <div class="form-row" style="margin-bottom: 0px;">
+        <label for="node-config-input-tsconfig-editor" style="width:auto;"><i class="fa fa-code"></i> tsconfig.json (only <code>compilerOptions</code> is used)</label>
+    </div>
+    <div class="form-row node-text-editor-row">
+        <div style="height: 250px; min-height:150px;" class="node-text-editor" id="node-config-input-tsconfig-editor"></div>
+    </div>
+    <ul id="node-config-tsconfig-warnings" class="form-tips" style="display:none; margin-left: 0; padding-left: 28px;"></ul>
+</script>
+
+<script type="text/html" data-help-name="typescript-config">
+    <p>TypeScript compiler options for the <code>typescript</code> nodes that select this configuration.</p>
+    <p>Write it like a <code>tsconfig.json</code>; comments and trailing commas are allowed. Only <code>compilerOptions</code> is used, and options that control output files are ignored. Anything ignored is listed under the editor.</p>
+    <p>The options apply to type checking in the editor and to the type check that runs after each deploy.</p>
+    <p>TypeScript runs in a worker thread, so flows are not held up by compiling or checking. The worker is shared by all <code>typescript</code> nodes:</p>
+    <ul>
+        <li><b>Keep the TypeScript worker running</b>: the worker is never stopped. When unchecked it stops after the idle time, which frees its memory, and starts again when needed.</li>
+        <li><b>Stop idle worker after</b>: with several configurations the longest time applies; nodes without a configuration use 30 seconds.</li>
+        <li><b>Worker heap limit</b>: if the worker needs more, it is stopped and the type check is skipped with a warning; with several configurations the largest limit applies. Empty means no limit.</li>
+    </ul>
 </script>
 
 <script type="text/javascript">

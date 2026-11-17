@@ -1,9 +1,32 @@
+import { libsWithNodeRedBundledTypes } from './editor/NodeRedBundledModuleTypes';
+import { generateEditorModuleDeclaration, ModuleLib, usableModuleLibs } from './env/ModuleImportDeclarationGenerator';
+import { NODE_RED_ENV_DECLARATION_SOURCE, NODE_RED_SANDBOX_VALUE_DECLARATIONS } from './env/NodeRedEnvDeclarationSource';
+import { inferContextSetsWithQuickInfo } from './editor/ContextSetQuickInfoInferrer';
+import { applyCompilerOptionsToMonaco, requestCompilerOptions } from './editor/EditorCompilerOptionsClient';
+import { EditorContextTypeStore } from './editor/EditorContextTypeStore';
+import { EditorModuleTypeLoader } from './editor/EditorModuleTypeLoader';
+import {
+    describeMissingMonacoTypeScriptApi,
+    monacoTypeScriptApi,
+    monacoTypeScriptApiIfAvailable,
+    removeExtraLibsWhere,
+} from './editor/MonacoTypeScriptApi';
+
 declare const RED: any;
 declare const window: typeof globalThis & {
     monaco: any;
-    tsConfigured: any;
     currentNodeInstance: any;
 };
+
+const contextTypeStore = new EditorContextTypeStore();
+const moduleTypeLoader = new EditorModuleTypeLoader();
+
+RED.events.on("flows:loaded", () => contextTypeStore.refresh());
+RED.events.on("deploy", () => {
+    contextTypeStore.refresh();
+    moduleTypeLoader.retryUntyped();
+});
+if (RED.nodes.version && RED.nodes.version()) contextTypeStore.refresh();
 
 function tr(key: string, params?: Record<string, string | number>) {
     var result = RED._("node-red:" + key);
@@ -68,104 +91,95 @@ function throwRequired(msg: string) {
 }
 
 const customDelarePath = 'file:///custom-declare.d.ts'
+const envDeclarePath = 'file:///node-red-ts-env.d.ts';
+const contextDeclarePath = 'file:///node-red-ts-context.d.ts';
+const moduleDeclarePathPrefix = 'file:///node-red-ts-libs/module/';
+
+// Node-RED's own sandbox declarations are looser than ours and would clash with them.
+const replacedNodeRedLibPattern = /types\/(node-red\/(func|util)|extraModuleLibs|other)\//;
+const nodeGlobalsLibPattern = /types\/node\/globals\/index\.d\.ts$/;
+const nodeGlobalDeclaration = 'declare var global: typeof globalThis;';
+
+function copyNodeRedTypeLibs(mts: any) {
+    // Libs loaded by the extraLibs option of RED.editor.createEditor
+    // (node-red/packages/node_modules/@node-red/editor-client/src/js/ui/editors/code-editors/monaco.js)
+    const jsLibs: Record<string, { content: string }> = mts.javascriptDefaults.getExtraLibs();
+    const tsLibs: Record<string, { content: string }> = mts.typescriptDefaults.getExtraLibs();
+    for (const uri of Object.keys(jsLibs)) {
+        if (replacedNodeRedLibPattern.test(uri) || !jsLibs[uri]?.content) continue;
+        const content = nodeGlobalsLibPattern.test(uri)
+            ? jsLibs[uri].content.replace(nodeGlobalDeclaration, '')
+            : jsLibs[uri].content;
+        if (tsLibs[uri]?.content !== content) mts.typescriptDefaults.addExtraLib(content, uri);
+    }
+}
+
+function setExtraLib(mts: any, content: string, filePath: string) {
+    if (mts.typescriptDefaults.getExtraLibs()[filePath]?.content !== content) {
+        mts.typescriptDefaults.addExtraLib(content, filePath);
+    }
+}
+
+function applyModuleDeclarations(mts: any, libs: ModuleLib[] | undefined) {
+    const declarations = new Map<string, string>();
+    for (const lib of usableModuleLibs(libs)) {
+        declarations.set(`${moduleDeclarePathPrefix}${lib.var}.d.ts`, generateEditorModuleDeclaration(lib));
+        moduleTypeLoader.load(lib.module);
+    }
+    removeExtraLibsWhere(filePath => filePath.startsWith(moduleDeclarePathPrefix) && !declarations.has(filePath));
+    for (const [filePath, content] of declarations) setExtraLib(mts, content, filePath);
+}
+
+function applyContextDeclarations(mts: any) {
+    const node = window.currentNodeInstance;
+    if (node) setExtraLib(mts, contextTypeStore.declarationsFor(node.id, node.z || ''), contextDeclarePath);
+}
+
+function selectedTsconfigText(): string | undefined {
+    const configNode = RED.nodes.node($("#node-input-tsconfig").val());
+    return configNode ? configNode.tsconfig : undefined;
+}
+
+function applyNodeCompilerOptions() {
+    if (!monacoTypeScriptApiIfAvailable()) {
+        console.warn(`[TS] No type checking in the editor: ${describeMissingMonacoTypeScriptApi()}`);
+        return;
+    }
+    applyCompilerOptionsToMonaco(selectedTsconfigText()).catch(error => {
+        console.warn("[TS] Failed to apply compiler options:", error);
+    });
+}
+
 function configMonaco(editor: any, customDeclare: any, nodeLibs?: any[]) {
     const monaco = window.monaco || throwRequired("monaco");
-    const languages = monaco.languages || throwRequired("languages");
-    const tsLanguage = languages.typescript || throwRequired("tsLanguage");
+    const mts = monacoTypeScriptApi();
     const tsEditor = editor || throwRequired("tsEditor");
-    const tsConfig = tsLanguage.typescriptDefaults || throwRequired("tsConfig");
-    const jsConfig = tsLanguage.javascriptDefaults || throwRequired("jsConfig");
+    const tsConfig = mts.typescriptDefaults || throwRequired("tsConfig");
 
-    // Add ExtraLibs From JS loaded by extraLibs options in RED.editor.createEditor function
-    // in node-red-master/packages/node_modules/@node-red/editor-client/src/js/ui/editors/code-editors/monaco.js)
-    const extraLibs = jsConfig.getExtraLibs();
-    Object.entries(extraLibs).forEach(([uri, lib]: any) => {
-        if (lib && lib.content) {
-            tsConfig.addExtraLib(lib.content, uri);
-        }
+    copyNodeRedTypeLibs(mts);
+    setExtraLib(
+        mts,
+        `${NODE_RED_ENV_DECLARATION_SOURCE}\n${NODE_RED_SANDBOX_VALUE_DECLARATIONS}declare var msg: NodeMessage;\n`,
+        envDeclarePath,
+    );
+    applyModuleDeclarations(mts, nodeLibs);
+    applyContextDeclarations(mts);
+    setExtraLib(mts, customDeclare ?? '', customDelarePath);
+
+    tsConfig.setDiagnosticsOptions({
+        noSemanticValidation: false,
+        noSyntaxValidation: false,
+        noSuggestionDiagnostics: false,
+        diagnosticCodesToIgnore: [
+            2451, // Cannot redeclare block-scoped variable 'msg'.
+            1375, // 'await' expressions are only allowed at the top level of a file when that file is a module
+            1378, // Top-level 'await' expressions are only allowed when the 'module' option is set to 'es2022'
+            1108, // A 'return' statement can only be used within a function body
+            1309, // The current file is a CommonJS module and cannot use 'await' at the top level
+            1431, // 'for await' loops are only allowed at the top level of a file when that file is a module
+            1432, // Top-level 'for await' loops are only allowed when the 'module' option is set to 'es2022'
+        ],
     });
-
-    // Generate module declarations based on node's lib list
-    const generateModuleDeclarations = (libs?: any[]): string => {
-        if (!libs || libs.length === 0) return '';
-        
-        return libs.map(lib => {
-            const varName = lib.var;
-            const moduleName = lib.module;
-            return `declare const ${varName}: typeof import('${moduleName}');`;
-        }).join('\n');
-    };
-
-    // Add Node-RED global types
-    const nodeRedTypes = `
-/// <reference lib="es2022" />
-/// <reference lib="dom" />
-/// <reference types="node" />
-
-declare const require: NodeRequire;
-
-${generateModuleDeclarations(nodeLibs)}
-
-declare const RED: {
-    util: {
-        getSetting: (node: any, key: string) => any;
-    };
-};
-declare const context: {
-    get: (key: string, store?: string) => any;
-    set: (key: string, value: any, store?: string) => void;
-    flow: any;
-    global: any;
-};
-declare const flow: {
-    get: <T = any>(key: string) => T;
-    set: (key: string, value: any) => void;
-};
-declare const global: any;
-declare const env: {
-    get: (key: string) => any;
-};
-`;
-
-    tsConfig.addExtraLib(nodeRedTypes, "file:///node-red-types.d.ts");
-    tsConfig.addExtraLib(customDeclare ?? '', customDelarePath);
-
-    // Only configure once per session
-    if (!window.tsConfigured) {
-        tsConfig.setDiagnosticsOptions({
-            noSemanticValidation: false,
-            noSyntaxValidation: false,
-            noSuggestionDiagnostics: false,
-            diagnosticCodesToIgnore: [
-                2451, // Cannot redeclare block-scoped variable 'msg'.
-                1375, // 'await' expressions are only allowed at the top level of a file when that file is a module
-                1378, // Top-level 'await' expressions are only allowed when the 'module' option is set to 'es2022'
-                1108, // A 'return' statement can only be used within a function body
-                // Removed 2339 to allow property errors to show
-            ],
-        });
-
-        tsConfig.setCompilerOptions({
-            target: tsLanguage.ScriptTarget.ES2022,
-            module: tsLanguage.ModuleKind.NodeNext,
-            moduleResolution:
-                monaco.languages.typescript.ModuleResolutionKind.NodeNext,
-            types: ["node"],
-            allowJs: true,
-            lib: ["ES2022", "ES2022.String", "ES2022.Array", "ES2022.Object"],
-            skipLibCheck: true,
-            esModuleInterop: true,
-            allowSyntheticDefaultImports: true,
-            noImplicitAny: false,
-            strict: false,
-            strictNullChecks: false,
-            suppressImplicitAnyIndexErrors: true,
-            strictPropertyInitialization: false,
-            noImplicitReturns: false,
-            noImplicitThis: false,
-        });
-        window.tsConfigured = true;
-    }
 
     // Configure individual editor model
     const tsModel = tsEditor.getModel();
@@ -538,25 +552,131 @@ function removeExtraLib(filePath: string) {
     const monaco = window.monaco;
     if (!monaco) throw new Error("monaco not found");
 
-    const tsConfig = monaco.languages.typescript.typescriptDefaults;
-
-    // 1️⃣ 删除 editor model（如果存在）
-    const uri = monaco.Uri.parse(filePath);
-    const model = monaco.editor.getModel(uri);
+    const model = monaco.editor.getModel(monaco.Uri.parse(filePath));
     if (model) model.dispose();
 
-    // 2️⃣ 删除 extraLib
-    const currentLibs: Record<string, any> = tsConfig.getExtraLibs();
-    const newLibsArray = Object.entries(currentLibs)
-        .filter(([path]) => path !== filePath)
-        .map(([path, lib]) => ({
-            filePath: path,
-            content: lib.content
-        }));
-
-    // 3️⃣ 覆盖到 tsConfig
-    tsConfig.setExtraLibs(newLibsArray);
+    removeExtraLibsWhere(path => path === filePath);
 }
+
+/** The expanded editor is created by Node-RED inside its own tray, so it is found among Monaco's editors once it exists. */
+function configExpandedTsEditors(node: any, nodeLibs: any[]) {
+    const editors = window.monaco?.editor?.getEditors?.() || [];
+    for (const editor of editors) {
+        const model = editor.getModel();
+        if (model && model.getLanguageId() === "typescript" && !model.uri.path.endsWith(".ts")) {
+            configMonaco(editor, node.declareEditor ? node.declareEditor.getValue() : null, nodeLibs);
+        }
+    }
+}
+
+const CONTEXT_INFERENCE_DELAY_MS = 800;
+let contextInferenceTimer: any;
+
+async function quickInfoTextAt(editor: any, offset: number): Promise<string | undefined> {
+    const model = editor.getModel();
+    if (!model || model.getLanguageId() !== "typescript") return undefined;
+    const getWorker = await monacoTypeScriptApi().getTypeScriptWorker();
+    const worker = await getWorker(model.uri);
+    const quickInfo = await worker.getQuickInfoAtPosition(model.uri.toString(), offset);
+    return quickInfo?.displayParts?.map((part: any) => part.text).join("");
+}
+
+/** Re-derives what the open node stores in context from its three code tabs and refreshes the `get` types. */
+async function inferOpenNodeContextSets(node: any) {
+    const sets: any[] = [];
+    for (const editor of [node.initEditor, node.editor, node.finalizeEditor]) {
+        if (!editor || editor.type !== "monaco") return;
+        sets.push(...await inferContextSetsWithQuickInfo(editor.getValue(), offset => quickInfoTextAt(editor, offset)));
+    }
+    if (window.currentNodeInstance !== node || !node.editor) return;
+    contextTypeStore.replaceContributor(node.id, node.z || "", sets);
+    applyContextDeclarations(monacoTypeScriptApi());
+}
+
+// Each call site costs a round trip to the TypeScript worker and a changed declaration
+// re-validates every open model, so inference waits for a pause in typing.
+function scheduleContextInference(node: any) {
+    clearTimeout(contextInferenceTimer);
+    contextInferenceTimer = setTimeout(() => {
+        inferOpenNodeContextSets(node).catch(error => console.warn("[TS] Context type inference failed:", error));
+    }, CONTEXT_INFERENCE_DELAY_MS);
+}
+
+/** tsconfig files allow comments and trailing commas; Monaco's JSON checking is global, so the returned function puts it back. */
+function allowJsonComments(): () => void {
+    const jsonDefaults = window.monaco?.json?.jsonDefaults || window.monaco?.languages?.json?.jsonDefaults;
+    if (!jsonDefaults) return () => {};
+    const previous = jsonDefaults.diagnosticsOptions;
+    jsonDefaults.setDiagnosticsOptions({ ...previous, allowComments: true, trailingCommas: "ignore" });
+    return () => jsonDefaults.setDiagnosticsOptions(previous);
+}
+
+const DEFAULT_TSCONFIG_TEXT = `{
+    "compilerOptions": {
+        "strict": true
+    }
+}
+`;
+
+RED.nodes.registerType("typescript-config", {
+    category: "config",
+    defaults: {
+        name: { value: "" },
+        tsconfig: { value: DEFAULT_TSCONFIG_TEXT },
+        persistentService: { value: false },
+        idleTimeoutSeconds: { value: 30, validate: function (value: any) { return value === "" || Number(value) >= 0; } },
+        maxHeapMb: { value: "", validate: function (value: any) { return value === "" || Number(value) > 0; } },
+    },
+    label: function (this: any) {
+        return this.name || "tsconfig";
+    },
+    oneditprepare: function (this: any) {
+        const node = this;
+        node.restoreJsonDiagnostics = allowJsonComments();
+        node.tsconfigEditor = RED.editor.createEditor({
+            id: "node-config-input-tsconfig-editor",
+            mode: "ace/mode/json",
+            value: node.tsconfig || "",
+        });
+
+        let warningsTimer: any;
+        const showWarnings = () => {
+            if (!node.tsconfigEditor) return;
+            requestCompilerOptions(node.tsconfigEditor.getValue()).then(response => {
+                const list = $("#node-config-tsconfig-warnings").empty();
+                for (const warning of response.warnings) {
+                    $("<li/>").text(warning).appendTo(list);
+                }
+                list.toggle(response.warnings.length > 0);
+            }).catch(error => console.warn("[TS] Failed to validate tsconfig:", error));
+        };
+        node.tsconfigEditor.getSession().on("change", () => {
+            clearTimeout(warningsTimer);
+            warningsTimer = setTimeout(showWarnings, 500);
+        });
+        showWarnings();
+    },
+    oneditsave: function (this: any) {
+        $("#node-config-input-tsconfig").val(this.tsconfigEditor.getValue());
+        this.tsconfigEditor.destroy();
+        delete this.tsconfigEditor;
+        this.restoreJsonDiagnostics();
+    },
+    oneditcancel: function (this: any) {
+        this.tsconfigEditor.destroy();
+        delete this.tsconfigEditor;
+        this.restoreJsonDiagnostics();
+    },
+    oneditresize: function (this: any, size: any) {
+        const editorElement = $("#node-config-input-tsconfig-editor");
+        let height = size.height;
+        editorElement.closest("form").children(":visible").not(".node-text-editor-row").each(function (this: any) {
+            height -= $(this).outerHeight(true) || 0;
+        });
+        editorElement.css("height", Math.max(150, height - 40) + "px");
+        if (this.tsconfigEditor) this.tsconfigEditor.resize();
+    },
+});
 
 RED.nodes.registerType("typescript", {
     color: "#61adff",
@@ -570,6 +690,7 @@ RED.nodes.registerType("typescript", {
         useVm: { value: false },
         updated: { value: 0 },
         declare: { value: "" },
+        tsconfig: { value: "", type: "typescript-config", required: false },
         noerr: {
             value: 0,
             required: true,
@@ -636,7 +757,7 @@ RED.nodes.registerType("typescript", {
                 let editor = $("#" + tab.id).find(".monaco-editor").first();
                 if (editor.length) {
                     if (that.editor.nodered && that.editor.type == "monaco") {
-                        that.editor.nodered.refreshModuleLibs(getLibsList());
+                        that.editor.nodered.refreshModuleLibs(libsWithNodeRedBundledTypes(getLibsList()));
                         
                         // Also refresh TypeScript configuration for all editors
                         try {
@@ -749,7 +870,7 @@ RED.nodes.registerType("typescript", {
                 value: value || defaultValue || "",
                 stateId: stateId,
                 focus: true,
-                extraLibs: extraLibs,
+                extraLibs: libsWithNodeRedBundledTypes(extraLibs),
             }, that));
             if (defaultValue && value === "") {
                 editor.moveCursorTo(
@@ -852,6 +973,8 @@ RED.nodes.registerType("typescript", {
                     `inside function-expandButtonClickHandler ${editor.__stateId}`,
                 );
                 var extraLibs = that.libs || [];
+                // Read now: the module list leaves the DOM while the expanded tray is open.
+                var nodeLibs = getLibsList();
                 RED.editor.editJavaScript(configTsEditor({
                     value: value,
                     width: "Infinity",
@@ -869,8 +992,11 @@ RED.nodes.registerType("typescript", {
                             editor.focus();
                         }, 250);
                     },
-                    extraLibs: extraLibs,
+                    extraLibs: libsWithNodeRedBundledTypes(extraLibs),
                 }, that));
+                for (const delayMs of [100, 500]) {
+                    setTimeout(() => configExpandedTsEditors(that, nodeLibs), delayMs);
+                }
             };
         };
         $("#node-init-expand-js").on(
@@ -913,6 +1039,15 @@ RED.nodes.registerType("typescript", {
             resetDeclare(that);
         });
 
+        contextTypeStore.checkpoint();
+        $("#node-input-tsconfig").on("change", applyNodeCompilerOptions);
+        applyNodeCompilerOptions();
+
+        for (const editor of [this.initEditor, this.editor, this.finalizeEditor]) {
+            editor.getSession().on("change", () => scheduleContextInference(that));
+        }
+        scheduleContextInference(that);
+
         if (RED.settings.functionExternalModules !== false) {
             prepareLibraryConfig(that);
 
@@ -931,6 +1066,7 @@ RED.nodes.registerType("typescript", {
     oneditsave: function (this: any) {
         var node = this;
         var noerr = 0;
+        clearTimeout(contextInferenceTimer);
         $("#node-input-noerr").val(0);
 
         // Transfer old script property to func for backward compatibility
@@ -987,6 +1123,8 @@ RED.nodes.registerType("typescript", {
     },
     oneditcancel: function (this: any) {
         var node = this;
+        clearTimeout(contextInferenceTimer);
+        contextTypeStore.rollback();
 
         node.editor.destroy();
         delete node.editor;
@@ -1019,17 +1157,13 @@ RED.nodes.registerType("typescript", {
             (sizeHeight - 75) + "px",
         );
 
-        this.initEditor.resize();
-        this.editor.resize();
-        this.finalizeEditor.resize();
-
-        if (this.declareEditor) {
-            this.declareEditor.resize();
+        for (const editor of [this.initEditor, this.editor, this.finalizeEditor, this.declareEditor]) {
+            if (editor) editor.resize();
         }
 
         $("#node-input-libs-container").css(
             "height",
-            (sizeHeight - 330) + "px",
+            (sizeHeight - 376) + "px",
         );
     },
     onadd: function (this: any) {
