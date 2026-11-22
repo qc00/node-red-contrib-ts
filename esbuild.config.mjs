@@ -1,4 +1,5 @@
 import { build } from 'esbuild';
+import { watch } from 'node:fs';
 import { copyFile, cp, readFile, rm, writeFile } from 'node:fs/promises';
 
 const pkg = JSON.parse(await readFile('./package.json', 'utf8'));
@@ -9,7 +10,7 @@ const config = {
   target: 'node18',
   format: 'cjs',
   outdir: 'dist',
-  external: ['node-red', 'typescript'],
+  external: ['node-red', 'typescript', 'typescript/*', '@types/node/package.json'],
   sourcemap: false,
   minify: true,
   treeShaking: true,
@@ -41,7 +42,7 @@ async function buildAll() {
   // Inject JS
   const html = await readFile('src/typescript.html');
   const js = await readFile('dist/typescript.html.js');
-  const htmlInjected = String(html).replace('/** INJECT_JS **/', String(js));
+  const htmlInjected = String(html).replace('/** INJECT_JS **/', () => String(js));
   await writeFile('dist/typescript.html', htmlInjected);
   await rm('dist/typescript.html.js');
   
@@ -49,7 +50,17 @@ async function buildAll() {
 
 }
 
-buildAll().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+if (process.argv.includes('--watch')) {
+  let scheduled;
+  const rebuild = () => buildAll().then(() => console.log('built'), (error) => console.error(error));
+  watch('src', { recursive: true }, () => {
+    clearTimeout(scheduled);
+    scheduled = setTimeout(rebuild, 100);
+  });
+  rebuild();
+} else {
+  buildAll().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

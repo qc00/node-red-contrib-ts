@@ -1,6 +1,10 @@
 import { NodeAPI, Node, NodeDef } from 'node-red';
 import * as vm from 'vm';
-import ts from 'typescript';
+import { registerTypeScriptAdminRoutes } from './admin/TypeScriptAdminHttpController';
+import { DeployTypeCheckCoordinator } from './compile/DeployTypeCheckCoordinator';
+import { usableModuleLibs } from './env/ModuleImportDeclarationGenerator';
+import { DEFAULT_IDLE_TIMEOUT_SECONDS, TypeScriptCompilerClient } from './compiler/TypeScriptCompilerClient';
+import { TypeScriptCompilerService } from './compiler/TypeScriptCompilerService';
 
 interface TypeScriptNodeDef extends NodeDef {
     name: string;
@@ -12,6 +16,21 @@ interface TypeScriptNodeDef extends NodeDef {
     useVm: boolean;
     updated?: number;
     libs?: Array<{var: string, module: string}>;
+    declare?: string;
+    tsconfig?: string;
+    _alias?: string;
+    _flow?: { subflowDef?: { id: string } };
+}
+
+interface TypeScriptConfigNodeDef extends NodeDef {
+    tsconfig?: string;
+    persistentService?: boolean;
+    idleTimeoutSeconds?: number | string;
+}
+
+interface TypeScriptConfigNode extends Node {
+    tsconfig: string | undefined;
+    persistentService: boolean;
 }
 
 type Msg = {
@@ -99,99 +118,23 @@ const sendResults = (send: SendFun, msgid: string, msgs: any) => {
     send(msgs);
 }
 
-const getScriptTarget = (): ts.ScriptTarget => {
-    const major = parseInt(process.version.slice(1).split('.')[0], 10);
-    if (major >= 22) return ts.ScriptTarget.ES2024;
-    if (major >= 20) return ts.ScriptTarget.ES2023;
-    if (major >= 18) return ts.ScriptTarget.ES2022;
-    if (major >= 16) return ts.ScriptTarget.ES2021;
-    if (major >= 14) return ts.ScriptTarget.ES2020;
-    return ts.ScriptTarget.ES2019;
-}
+const SECTION_LABELS = ['On Message', 'On Start', 'On Stop'];
 
-const SCRIPT_TARGET = getScriptTarget();
-
-function compileTypeScript(node: Node, script: string): string {
+async function compileTypeScript(node: TsNode, sources: string[]): Promise<string[]> {
+    const sizes = sources.map((source, index) => `${SECTION_LABELS[index]} ${source.length}`).join(', ');
+    node.log(`Compiling TypeScript (${sizes} chars)`);
+    const startedAt = Date.now();
+    let result;
     try {
-        node.log(`Compiling TypeScript (${script.length} chars)`);
-        
-        const result = ts.transpileModule(script, {
-            compilerOptions: {
-                target: SCRIPT_TARGET,
-                module: ts.ModuleKind.CommonJS,
-                moduleResolution: ts.ModuleResolutionKind.Node10,
-                
-                // Maximum permissiveness - allow everything
-                allowJs: true,
-                allowUnreachableCode: true,
-                allowUnusedLabels: true,
-                
-                // Disable all strict checks
-                strict: false,
-                noImplicitAny: false,
-                noImplicitThis: false,
-                noImplicitReturns: false,
-                noImplicitUseStrict: false,
-                
-                // Disable all error checking
-                noUnusedLocals: false,
-                noUnusedParameters: false,
-                exactOptionalPropertyTypes: false,
-                noUncheckedIndexedAccess: false,
-                noPropertyAccessFromIndexSignature: false,
-                
-                // Skip all lib and declaration checks
-                skipLibCheck: true,
-                skipDefaultLibCheck: true,
-                
-                // Suppress warnings and errors
-                suppressExcessPropertyErrors: true,
-                suppressImplicitAnyIndexErrors: true,
-                
-                // Allow all JS features
-                allowSyntheticDefaultImports: true,
-                allowUmdGlobalAccess: true,
-                
-                // Disable emit checks
-                noEmitOnError: false,
-                
-                // Maximum compatibility
-                downlevelIteration: true,
-                importHelpers: false
-            }
-        });
-        
-        // Check for TypeScript diagnostics
-        if (result.diagnostics && result.diagnostics.length > 0) {
-            const errors = result.diagnostics.map(diagnostic => {
-                const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n');
-                if (diagnostic.file && diagnostic.start !== undefined) {
-                    const { line, character } = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start);
-                    return `Line ${line + 1}:${character + 1}: ${message}`;
-                }
-                return message;
-            }).join('\n');
-            
-            node.error(`TypeScript diagnostics:\n${errors}`);
-        }
-        
-        node.log('TypeScript compilation successful');
-        return result.outputText;
+        result = await node.typeScriptCompiler.transpile(sources, node.tsconfig);
     } catch (error: any) {
-        const json: any = {};
-        try {
-            json.stack = String(error.stack);
-            json.message = String(error.message);
-            json.errorKeys = Object.keys(error);
-        } catch(e) {}
-        try {
-            const prototype = Object.getPrototypeOf(error);
-            json.prototypeType = String(typeof prototype);
-            json.prototypeKeys = Object.keys(prototype);
-            json.prototypeName = String(prototype.name);
-        } catch(e) {}
-        throw new Error(`Compilation failed: ${JSON.stringify(json)}`);
+        throw new Error(`Compilation failed: ${error?.message || error}`);
     }
+    result.diagnostics.forEach((diagnostics, index) => {
+        if (diagnostics.length) node.error(`TypeScript diagnostics in ${SECTION_LABELS[index]}:\n${diagnostics.join('\n')}`);
+    });
+    node.log(`TypeScript compilation finished in ${Date.now() - startedAt}ms`);
+    return result.outputs;
 }
 
 async function injectModules(scope: any, libs: any[], RED: any, node: Node): Promise<void> {
@@ -227,9 +170,11 @@ async function newCompilation(node: TsNode, comp: Compilation, def: TypeScriptNo
     const finTs = def.finalize || '';
     const timeout = Number(def.timeout) || (RED as any).settings?.globalFunctionTimeout || undefined;
     
-    const funJs = compileTypeScript(node, `(async function(msg, node) { ${funTs} })(msg, node)`);
-    const iniJs = compileTypeScript(node, `(async function() { ${iniTs} })()`);
-    const finJs = compileTypeScript(node, `(async function() { ${finTs} })()`);
+    const [funJs, iniJs, finJs] = await compileTypeScript(node, [
+        `(async function(msg, node) { ${funTs} })(msg, node)`,
+        `(async function() { ${iniTs} })()`,
+        `(async function() { ${finTs} })()`,
+    ]);
     
     const nodeContext = node.context();
     const nodeSend = (...args: any[]) => node.send(...args);
@@ -368,6 +313,8 @@ interface TsNode extends Node {
     timeouts: Set<any>;
     intervals: Set<any>;
     def: TypeScriptNodeDef;
+    tsconfig: string | undefined;
+    typeScriptCompiler: TypeScriptCompilerService;
     _path: string;
     clearStatus: boolean;
 
@@ -380,10 +327,59 @@ interface TsNode extends Node {
 }
 
 export = (RED: NodeAPI) => {
+    const userDir = (RED.settings as any).userDir || process.cwd();
+    const compilerClient = new TypeScriptCompilerClient(userDir, RED.log);
+    const typeScriptCompiler = new TypeScriptCompilerService(compilerClient, userDir);
+    const typeCheckService = new DeployTypeCheckCoordinator(
+        (rev, targets, progress) => typeScriptCompiler.typeCheck(rev, targets, progress),
+        RED.log,
+    );
+    registerTypeScriptAdminRoutes(RED, typeCheckService, typeScriptCompiler);
+    RED.events.on('flows:started', (event: any) => {
+        typeCheckService.schedule(event?.config?.rev);
+    });
+
+    const TypeScriptConfigNode = function(this: TypeScriptConfigNode, def: TypeScriptConfigNodeDef) {
+        RED.nodes.createNode(this, def);
+        this.tsconfig = def.tsconfig;
+        this.persistentService = def.persistentService === true;
+
+        const idleTimeoutSeconds = Number(def.idleTimeoutSeconds);
+        compilerClient.registerSettings(this.id, {
+            keepAlive: this.persistentService,
+            idleTimeoutSeconds: def.idleTimeoutSeconds !== '' && idleTimeoutSeconds >= 0 ? idleTimeoutSeconds : DEFAULT_IDLE_TIMEOUT_SECONDS,
+        });
+        this.on('close', () => compilerClient.unregisterSettings(this.id));
+
+        typeScriptCompiler.resolveCompilerOptions(def.tsconfig).then(
+            resolved => { for (const warning of resolved.warnings) this.warn(`tsconfig: ${warning}`); },
+            error => this.warn(`tsconfig could not be checked: ${error?.message || error}`),
+        );
+    };
+    RED.nodes.registerType("typescript-config", TypeScriptConfigNode as any);
+
     const TypeScriptNode = function(this: TsNode, def: TypeScriptNodeDef) {
         RED.nodes.createNode(this, def);
 
         this.RED = RED;
+
+        const configNode = def.tsconfig ? RED.nodes.getNode(def.tsconfig) as TypeScriptConfigNode | undefined : undefined;
+        this.tsconfig = configNode?.tsconfig;
+        this.typeScriptCompiler = typeScriptCompiler;
+        typeCheckService.register(this.id, {
+            definition: {
+                id: def._alias || def.id,
+                flowId: def._flow?.subflowDef?.id || def.z || '',
+                libs: usableModuleLibs(def.libs),
+                declare: def.declare || '',
+                initialize: def.initialize || '',
+                func: def.func || '',
+                finalize: def.finalize || '',
+            },
+            tsconfig: this.tsconfig,
+            log: message => this.log(message),
+            warn: message => this.warn(message),
+        });
 
         // Precompile on node creation
         getCompilation(this, def, RED);
@@ -412,6 +408,7 @@ export = (RED: NodeAPI) => {
         
         // Clean up compilation on node close
         this.on('close', async () => {
+            typeCheckService.unregister(this.id);
             try {
                 if (this.comp) await this.comp.fin();
             } catch (error: any) {
