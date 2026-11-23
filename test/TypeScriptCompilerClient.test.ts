@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
-import { TypeScriptCompilerClient } from '../src/compiler/TypeScriptCompilerClient';
-import { TypeScriptCompilerService } from '../src/compiler/TypeScriptCompilerService';
+import { TypeScriptCompilerClient, TypeScriptCompilerService } from '../src/compiler';
 import { TypeCheckFixture } from './support/TypeCheckFixture';
 
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));

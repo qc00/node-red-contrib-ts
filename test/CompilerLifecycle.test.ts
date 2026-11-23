@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { it } from 'node:test';
-import { TypeScriptCompilerClient } from '../src/compiler/TypeScriptCompilerClient';
-import type { TypeScriptCompiler } from '../src/compiler/TypeScriptCompiler';
+import { TypeScriptCompilerClient, TypeScriptCompiler } from '../src/compiler';
 
 const log = { info() {}, warn() {} };
 function fakeCompiler() {

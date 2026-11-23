@@ -1,8 +1,7 @@
 import ts from 'typescript5';
-import type { TypeScriptCompilerService } from '../../src/compiler/TypeScriptCompilerService';
-import { ContextScopeKeyTypes, EMPTY_CONTEXT_SCOPE_KEY_TYPES, generateContextDeclarations } from '../../src/env/ContextTypeDeclarationGenerator';
-import { generateEditorModuleDeclaration, ModuleLib } from '../../src/env/ModuleImportDeclarationGenerator';
-import { NODE_RED_ENV_DECLARATION_SOURCE, NODE_RED_SANDBOX_VALUE_DECLARATIONS } from '../../src/env/NodeRedEnvDeclarationSource';
+import type { TypeScriptCompilerService } from '../../src/compiler';
+import { ContextScopeKeyTypes, EMPTY_CONTEXT_SCOPE_KEY_TYPES, generateContextDeclarations } from '../../src/context-types';
+import { generateEditorModuleDeclaration, ModuleLib, NODE_RED_ENV_DECLARATION_SOURCE, NODE_RED_SANDBOX_VALUE_DECLARATIONS } from '../../src/declarations';
 
 export interface EditorProgramInput {
     userDir: string;

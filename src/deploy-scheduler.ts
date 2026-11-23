@@ -1,5 +1,5 @@
-import { ContextTypeRegistry, ContextTypeRegistrySnapshot } from './ContextTypeRegistry';
-import type { NodeSourceDefinition } from './NodeVirtualSourceBuilder';
+import { ContextTypeRegistry, ContextTypeRegistrySnapshot } from './context-types';
+import type { NodeSourceDefinition } from './node-source';
 
 export interface TypeCheckRequestTarget {
     /** Unique per running node; several subflow instances share one definition id. */

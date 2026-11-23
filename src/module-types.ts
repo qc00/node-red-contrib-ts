@@ -1,7 +1,7 @@
 import * as path from 'path';
-import type { TypeScriptCompiler } from '../compiler/TypeScriptCompiler';
-import { builtinModuleTypeFiles, isBuiltinModule } from './BuiltinModuleTypeFiles';
-import type { CompilerOptionValues } from './TsconfigCompilerOptionsResolver';
+import type { TypeScriptCompiler } from './compiler';
+import type { CompilerOptionValues } from './compiler-options';
+import { builtinModules } from 'module';
 
 export interface ModuleTypeFile {
     /** Relative to the Node-RED user directory, forward slashes. */
@@ -101,4 +101,13 @@ export async function collectModuleTypeFiles(compiler: TypeScriptCompiler, modul
     } finally {
         await snapshot.dispose();
     }
+}
+
+export function isBuiltinModule(moduleName: string): boolean {
+    return builtinModules.includes(moduleName.replace(/^node:/, ''));
+}
+
+/** The answer for a Node built-in: the editor takes its declarations from Node-RED, and needs to know which references are built-ins too. */
+export function builtinModuleTypeFiles(): ModuleTypeFiles {
+    return { builtin: true, builtinModules: [...builtinModules], files: [], truncated: false };
 }

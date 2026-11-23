@@ -1,5 +1,4 @@
-import { NODE_RED_SANDBOX_VALUE_DECLARATIONS } from '../env/NodeRedEnvDeclarationSource';
-import { generateServerModuleImports, ModuleLib } from '../env/ModuleImportDeclarationGenerator';
+import { NODE_RED_SANDBOX_VALUE_DECLARATIONS, generateServerModuleImports, ModuleLib } from './declarations';
 
 export interface NodeSourceDefinition {
     id: string;

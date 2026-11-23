@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
-import { ContextTypeRegistry } from '../src/compile/ContextTypeRegistry';
-import { extractSetValueType, findContextSetCallSites, inferContextSetsWithQuickInfo } from '../src/editor/ContextSetQuickInfoInferrer';
+import { ContextTypeRegistry } from '../src/context-types';
+import { extractSetValueType, findContextSetCallSites, inferContextSetsWithQuickInfo } from '../src/editor/context-types';
 import { EditorProgramFixture } from './support/EditorProgramFixture';
 import { STRICT, TypeCheckFixture } from './support/TypeCheckFixture';
 

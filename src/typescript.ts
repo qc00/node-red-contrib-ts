@@ -1,10 +1,9 @@
 import { NodeAPI, Node, NodeDef } from 'node-red';
 import * as vm from 'vm';
-import { registerTypeScriptAdminRoutes } from './admin/TypeScriptAdminHttpController';
-import { DeployTypeCheckCoordinator } from './compile/DeployTypeCheckCoordinator';
-import { usableModuleLibs } from './env/ModuleImportDeclarationGenerator';
-import { DEFAULT_IDLE_TIMEOUT_SECONDS, TypeScriptCompilerClient } from './compiler/TypeScriptCompilerClient';
-import { TypeScriptCompilerService } from './compiler/TypeScriptCompilerService';
+import { registerTypeScriptAdminRoutes } from './routes';
+import { DeployTypeCheckCoordinator } from './deploy-scheduler';
+import { usableModuleLibs } from './declarations';
+import { DEFAULT_IDLE_TIMEOUT_SECONDS, TypeScriptCompilerClient, TypeScriptCompilerService } from './compiler';
 
 interface TypeScriptNodeDef extends NodeDef {
     name: string;

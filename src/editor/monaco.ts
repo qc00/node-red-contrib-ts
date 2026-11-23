@@ -1,3 +1,5 @@
+
+
 declare const window: any;
 
 declare const RED: any;

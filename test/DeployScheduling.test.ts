@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { it } from 'node:test';
-import { DeployTypeCheckCoordinator, TypeCheckRunner } from '../src/compile/DeployTypeCheckCoordinator';
+import { DeployTypeCheckCoordinator, TypeCheckRunner } from '../src/deploy-scheduler';
 
 const empty = (rev?: string) => ({ rev, node: {}, flow: {}, global: {} });
 const log = { info() {}, warn() {} };

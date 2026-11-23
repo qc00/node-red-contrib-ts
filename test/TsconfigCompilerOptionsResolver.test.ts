@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
-import { resolveCompilerOptions as resolveWith } from '../src/compile/TsconfigCompilerOptionsResolver';
-import { startTypeScriptCompiler, TypeScriptCompiler } from '../src/compiler/TypeScriptCompiler';
+import { resolveCompilerOptions as resolveWith } from '../src/compiler-options';
+import { startTypeScriptCompiler, TypeScriptCompiler } from '../src/compiler';
 
 const MODULE_KIND_NODE_NEXT = 199;
 const MODULE_KIND_PRESERVE = 200;

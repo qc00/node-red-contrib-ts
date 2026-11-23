@@ -1,10 +1,9 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { DeployTypeCheckCoordinator, TypeCheckNodeRegistration } from '../../src/compile/DeployTypeCheckCoordinator';
-import { TypeScriptCompilerClient } from '../../src/compiler/TypeScriptCompilerClient';
-import { TypeScriptCompilerService } from '../../src/compiler/TypeScriptCompilerService';
-import { NodeSourceDefinition } from '../../src/compile/NodeVirtualSourceBuilder';
+import { DeployTypeCheckCoordinator, TypeCheckNodeRegistration } from '../../src/deploy-scheduler';
+import { TypeScriptCompilerClient, TypeScriptCompilerService } from '../../src/compiler';
+import { NodeSourceDefinition } from '../../src/node-source';
 
 const PACKAGES: Record<string, string> = {
     'node_modules/esmlib/package.json': '{"name":"esmlib","type":"module","exports":{".":{"types":"./index.d.mts","default":"./index.mjs"}}}',

@@ -1,7 +1,7 @@
 import { NodeAPI } from 'node-red';
-import { builtinModuleTypeFiles, isBuiltinModule } from '../compile/BuiltinModuleTypeFiles';
-import { DeployTypeCheckCoordinator } from '../compile/DeployTypeCheckCoordinator';
-import { TypeScriptCompilerService } from '../compiler/TypeScriptCompilerService';
+import { builtinModuleTypeFiles, isBuiltinModule } from './module-types';
+import { DeployTypeCheckCoordinator } from './deploy-scheduler';
+import { TypeScriptCompilerService } from './compiler';
 
 export const ADMIN_ROUTE_PREFIX = '/typescript-node';
 
