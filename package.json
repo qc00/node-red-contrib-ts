@@ -44,7 +44,7 @@
     "lint": "tsc --noEmit",
     "lint:watch": "tsc --noEmit --watch",
     "build:watch": "node esbuild.config.mjs --watch",
-    "test": "node esbuild.test.mjs && node --test .test-build/",
+    "test": "npm run build && node esbuild.test.mjs && node --test .test-build/*.test.js",
     "clean": "rm -rf dist"
   },
   "node-red": {
