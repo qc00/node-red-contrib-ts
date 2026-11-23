@@ -1,12 +1,12 @@
 import { NodeAPI } from 'node-red';
 import { builtinModuleTypeFiles, isBuiltinModule } from './module-types';
 import { DeployTypeCheckCoordinator } from './deploy-scheduler';
-import { TypeScriptCompilerService } from './compiler';
+import { CompilerRuntime } from './compiler';
 
 export const ADMIN_ROUTE_PREFIX = '/typescript-node';
 
 /** Serves the editor what only the runtime can compute: context key types, module typings and parsed tsconfig. */
-export function registerTypeScriptAdminRoutes(RED: NodeAPI, typeCheckService: DeployTypeCheckCoordinator, typeScriptCompiler: TypeScriptCompilerService) {
+export function registerTypeScriptAdminRoutes(RED: NodeAPI, typeCheckService: DeployTypeCheckCoordinator, typeScriptCompiler: CompilerRuntime) {
     const canRead = RED.auth.needsPermission('typescript.read');
     const fail = (res: any) => (error: any) => res.status(500).json({ error: String(error?.message || error) });
 

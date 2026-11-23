@@ -1,18 +1,18 @@
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
-import { TypeScriptCompilerClient, TypeScriptCompilerService } from '../src/compiler';
+import { CompilerRuntime } from '../src/compiler';
 import { TypeCheckFixture } from './support/TypeCheckFixture';
 
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 describe('TypeScriptCompilerClient', () => {
     const packages = new TypeCheckFixture();
-    const clients: TypeScriptCompilerClient[] = [];
+    const clients: CompilerRuntime[] = [];
     const newService = () => {
         const log: string[] = [];
-        const client = new TypeScriptCompilerClient(packages.userDir, { info: m => { log.push(m); }, warn: m => { log.push(m); } });
+        const client = new CompilerRuntime(packages.userDir, { info: m => { log.push(m); }, warn: m => { log.push(m); } });
         clients.push(client);
-        return { client, log, service: new TypeScriptCompilerService(client, packages.userDir) };
+        return { client, log, service: client };
     };
     const count = (log: string[], text: string) => log.filter(line => line.includes(text)).length;
     after(async () => {
@@ -39,9 +39,9 @@ describe('TypeScriptCompilerClient', () => {
         const order: string[] = [];
         const definition = { id: 'n', flowId: 'flow1', libs: [], declare: '', initialize: '', func: 'return msg;', finalize: '' };
         let transpile!: Promise<unknown>;
-        const check = service.typeCheck('rev1', [{ instanceId: 'n', definition, tsconfig: undefined }], () => {
+        const check = service.typeCheck('rev1', [{ instanceId: 'n', definition, tsconfig: undefined }], { info: () => {
             transpile ??= service.transpile(['const x: number = 2;'], undefined).then(() => order.push('transpile'));
-        }).then(() => order.push('check'));
+        }, nodeLog() {}, nodeWarn() {}, nodeReport() {} }).then(() => order.push('check'));
         await check;
         await transpile;
         assert.deepEqual(order, ['transpile', 'check']);

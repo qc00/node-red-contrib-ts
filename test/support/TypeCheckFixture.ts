@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DeployTypeCheckCoordinator, TypeCheckNodeRegistration } from '../../src/deploy-scheduler';
-import { TypeScriptCompilerClient, TypeScriptCompilerService } from '../../src/compiler';
+import { CompilerRuntime } from '../../src/compiler';
 import { NodeSourceDefinition } from '../../src/node-source';
 
 const PACKAGES: Record<string, string> = {
@@ -37,8 +37,8 @@ export class TypeCheckFixture {
     readonly warnings = new Map<string, string[]>();
     readonly log: string[] = [];
     readonly service: DeployTypeCheckCoordinator;
-    readonly compilerClient: TypeScriptCompilerClient;
-    readonly compiler: TypeScriptCompilerService;
+    readonly compilerClient: CompilerRuntime;
+    readonly compiler: CompilerRuntime;
 
     constructor() {
         for (const [relativePath, content] of Object.entries(PACKAGES)) {
@@ -47,8 +47,8 @@ export class TypeCheckFixture {
             writeFileSync(filePath, content);
         }
         const logger = { info: (message: string) => { this.log.push(message); }, warn: (message: string) => { this.log.push(message); } };
-        this.compilerClient = new TypeScriptCompilerClient(this.userDir, logger);
-        this.compiler = new TypeScriptCompilerService(this.compilerClient, this.userDir);
+        this.compiler = new CompilerRuntime(this.userDir, logger);
+        this.compilerClient = this.compiler;
         this.service = new DeployTypeCheckCoordinator(
             (rev, targets, progress) => this.compiler.typeCheck(rev, targets, progress),
             { info: message => this.log.push(message), warn: message => this.log.push(message) },

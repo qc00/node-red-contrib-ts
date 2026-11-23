@@ -3,7 +3,7 @@ import * as vm from 'vm';
 import { registerTypeScriptAdminRoutes } from './routes';
 import { DeployTypeCheckCoordinator } from './deploy-scheduler';
 import { usableModuleLibs } from './declarations';
-import { DEFAULT_IDLE_TIMEOUT_SECONDS, TypeScriptCompilerClient, TypeScriptCompilerService } from './compiler';
+import { DEFAULT_IDLE_TIMEOUT_SECONDS, CompilerRuntime } from './compiler';
 
 interface TypeScriptNodeDef extends NodeDef {
     name: string;
@@ -313,7 +313,7 @@ interface TsNode extends Node {
     intervals: Set<any>;
     def: TypeScriptNodeDef;
     tsconfig: string | undefined;
-    typeScriptCompiler: TypeScriptCompilerService;
+    typeScriptCompiler: CompilerRuntime;
     _path: string;
     clearStatus: boolean;
 
@@ -327,8 +327,7 @@ interface TsNode extends Node {
 
 export = (RED: NodeAPI) => {
     const userDir = (RED.settings as any).userDir || process.cwd();
-    const compilerClient = new TypeScriptCompilerClient(userDir, RED.log);
-    const typeScriptCompiler = new TypeScriptCompilerService(compilerClient, userDir);
+    const typeScriptCompiler = new CompilerRuntime(userDir, RED.log);
     const typeCheckService = new DeployTypeCheckCoordinator(
         (rev, targets, progress) => typeScriptCompiler.typeCheck(rev, targets, progress),
         RED.log,
@@ -344,11 +343,11 @@ export = (RED: NodeAPI) => {
         this.persistentService = def.persistentService === true;
 
         const idleTimeoutSeconds = Number(def.idleTimeoutSeconds);
-        compilerClient.registerSettings(this.id, {
+        typeScriptCompiler.registerSettings(this.id, {
             keepAlive: this.persistentService,
             idleTimeoutSeconds: def.idleTimeoutSeconds !== '' && idleTimeoutSeconds >= 0 ? idleTimeoutSeconds : DEFAULT_IDLE_TIMEOUT_SECONDS,
         });
-        this.on('close', () => compilerClient.unregisterSettings(this.id));
+        this.on('close', () => typeScriptCompiler.unregisterSettings(this.id));
 
         typeScriptCompiler.resolveCompilerOptions(def.tsconfig).then(
             resolved => { for (const warning of resolved.warnings) this.warn(`tsconfig: ${warning}`); },

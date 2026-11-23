@@ -1,3 +1,4 @@
+import type { TypeCheckProgressSink } from './type-checker';
 import { ContextTypeRegistry, ContextTypeRegistrySnapshot } from './context-types';
 import type { NodeSourceDefinition } from './node-source';
 
@@ -7,10 +8,6 @@ export interface TypeCheckRequestTarget {
     definition: NodeSourceDefinition;
     tsconfig: string | undefined;
 }
-
-export type TypeCheckProgressEvent =
-    | { kind: 'info'; message: string }
-    | { kind: 'nodeLog' | 'nodeWarn' | 'nodeReport'; instanceId: string; message: string };
 
 export interface TypeCheckNodeRegistration {
     definition: NodeSourceDefinition;
@@ -27,7 +24,7 @@ export interface TypeCheckLogger {
 export type TypeCheckRunner = (
     rev: string | undefined,
     targets: TypeCheckRequestTarget[],
-    progress: (event: TypeCheckProgressEvent) => void,
+    progress: TypeCheckProgressSink,
 ) => Promise<ContextTypeRegistrySnapshot>;
 
 const yieldToEventLoop = () => new Promise<void>(resolve => setImmediate(resolve));
@@ -90,16 +87,14 @@ export class DeployTypeCheckCoordinator {
             tsconfig: registration.tsconfig,
         }));
 
-        const snapshot = await this.runner(rev, targets, event => {
-            if (event.kind === 'info') {
-                this.log.info(event.message);
-                return;
-            }
-            const registration = batch.get(event.instanceId);
-            if (!registration) return;
-            if (event.kind === 'nodeLog') registration.log(event.message);
-            else if (event.kind === 'nodeWarn') registration.warn(event.message);
-            else this.report(registration, event.message);
+        const snapshot = await this.runner(rev, targets, {
+            info: message => this.log.info(message),
+            nodeLog: (id, message) => batch.get(id)?.log(message),
+            nodeWarn: (id, message) => batch.get(id)?.warn(message),
+            nodeReport: (id, message) => {
+                const registration = batch.get(id);
+                if (registration) this.report(registration, message);
+            },
         });
         // A deploy that arrived meanwhile has scheduled its own check; this result describes nodes that are gone.
         if (!this.pending) this.latestRegistry = new ContextTypeRegistry(snapshot);

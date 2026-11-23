@@ -1,7 +1,7 @@
 import type { API } from 'typescript/async';
 import type { ContextTypeRegistrySnapshot } from './context-types';
-import type { TypeCheckProgressEvent, TypeCheckRequestTarget } from './deploy-scheduler';
-import { DeployTypeChecker } from './type-checker';
+import type { TypeCheckRequestTarget } from './deploy-scheduler';
+import { DeployTypeChecker, TypeCheckProgressSink } from './type-checker';
 import { collectModuleTypeFiles, ModuleTypeFiles } from './module-types';
 import { CompilerOptionValues, ResolvedCompilerOptions, resolveCompilerOptions } from './compiler-options';
 
@@ -65,177 +65,111 @@ export async function startTypeScriptCompiler(currentDirectory: string): Promise
     };
 }
 
-export interface TypeScriptCompilerSettings {
-    /** Never stop the compiler process when idle. */
+export interface CompilerSettings {
     keepAlive: boolean;
     idleTimeoutSeconds: number;
 }
 
-export interface TypeScriptCompilerLogger {
+export interface CompilerLogger {
     info(message: string): void;
     warn(message: string): void;
 }
 
 export const DEFAULT_IDLE_TIMEOUT_SECONDS = 30;
+const MAX_CACHED_TSCONFIGS = 16;
 
-/** Owns the lifetime of the compiler process: started on first use, stopped when idle. */
-export class TypeScriptCompilerClient {
-    private settings = new Map<string, TypeScriptCompilerSettings>();
+export interface CompilerOptionsSummary {
+    options: CompilerOptionValues;
+    json: Record<string, unknown>;
+    warnings: string[];
+}
+
+/** One compiler generation. Retirement never changes the instance used by existing calls. */
+export class Compiler {
     private starting: Promise<TypeScriptCompiler> | undefined;
     private activeUses = 0;
-    private idleTimer: NodeJS.Timeout | undefined;
+    private retired = false;
+    private closing: Promise<void> | undefined;
+    private forceStop: NodeJS.Timeout | undefined;
+    private resolvedByText = new Map<string, Promise<ResolvedCompilerOptions>>();
+    private readonly typeChecker: DeployTypeChecker;
 
     constructor(
-        private readonly currentDirectory: string,
-        private readonly log: TypeScriptCompilerLogger,
-        private readonly start: (currentDirectory: string) => Promise<TypeScriptCompiler> = startTypeScriptCompiler,
-    ) {}
-
-    registerSettings(ownerId: string, settings: TypeScriptCompilerSettings) {
-        this.settings.set(ownerId, settings);
-        this.scheduleIdleStop();
+        private readonly userDir: string,
+        private readonly log: CompilerLogger,
+        private readonly start = startTypeScriptCompiler,
+        private readonly onIdle: () => void = () => {},
+        private readonly onDisposed: () => void = () => {},
+    ) {
+        this.typeChecker = new DeployTypeChecker(userDir);
     }
 
-    unregisterSettings(ownerId: string) {
-        this.settings.delete(ownerId);
-        this.scheduleIdleStop();
-    }
+    get busy() { return this.activeUses > 0; }
 
-    /** Runs `operation` against the compiler, starting it if needed; uses may overlap. */
     async use<T>(operation: (compiler: TypeScriptCompiler) => Promise<T>): Promise<T> {
-        clearTimeout(this.idleTimer);
+        if (this.retired) throw new Error('The TypeScript compiler has been retired');
         this.activeUses++;
         try {
-            const compiler = await this.running();
-            // Requests to a process that has gone are never answered.
+            if (!this.starting) {
+                const startedAt = Date.now();
+                const starting = this.start(this.userDir);
+                this.starting = starting;
+                starting.then(
+                    () => this.log.info(`TypeScript compiler started in ${Date.now() - startedAt}ms`),
+                    () => { if (this.starting === starting) this.starting = undefined; },
+                );
+            }
+            const compiler = await this.starting;
             const stopped = compiler.exited.then(() => { throw new Error('The TypeScript compiler process stopped'); });
             stopped.catch(() => {});
             return await Promise.race([operation(compiler), stopped]);
         } finally {
             this.activeUses--;
-            this.scheduleIdleStop();
+            if (!this.busy) {
+                if (this.retired) void this[Symbol.asyncDispose]();
+                else this.onIdle();
+            }
         }
     }
 
-    async shutdown() {
-        clearTimeout(this.idleTimer);
-        await this.stop();
+    retire() {
+        if (this.retired) return;
+        this.retired = true;
+        if (!this.busy) void this[Symbol.asyncDispose]();
+        else this.forceStop = setTimeout(() => { void this[Symbol.asyncDispose](); }, CLOSE_TIMEOUT_MS).unref();
     }
 
-    /** Replaces a compiler process that no longer answers properly; the next use starts a new one. */
-    restart() {
-        this.log.warn('TypeScript compiler is being restarted');
-        this.stop();
+    [Symbol.asyncDispose](): Promise<void> {
+        this.retired = true;
+        clearTimeout(this.forceStop);
+        return this.closing ??= (async () => {
+            try { await (await this.starting)?.close(); } catch { /* Already gone, or startup failed. */ }
+            finally { this.onDisposed(); }
+        })();
     }
 
-    private running(): Promise<TypeScriptCompiler> {
-        if (!this.starting) {
-            const startedAt = Date.now();
-            const starting = this.start(this.currentDirectory);
-            this.starting = starting;
-            starting.then(
-                compiler => {
-                    this.log.info(`TypeScript compiler started in ${Date.now() - startedAt}ms`);
-                    compiler.exited.then(() => {
-                        if (this.starting !== starting) return;
-                        this.starting = undefined;
-                        this.log.warn('TypeScript compiler process stopped unexpectedly');
-                    });
-                },
-                () => { if (this.starting === starting) this.starting = undefined; },
-            );
-        }
-        return this.starting;
-    }
-
-    private async stop() {
-        const starting = this.starting;
-        this.starting = undefined;
-        try {
-            await (await starting)?.close();
-        } catch {
-            // Already gone.
-        }
-    }
-
-    private scheduleIdleStop() {
-        clearTimeout(this.idleTimer);
-        if (this.activeUses > 0 || !this.starting) return;
-        const all = [...this.settings.values()];
-        if (all.some(settings => settings.keepAlive)) return;
-        const idleTimeoutSeconds = all.length
-            ? Math.max(...all.map(settings => settings.idleTimeoutSeconds))
-            : DEFAULT_IDLE_TIMEOUT_SECONDS;
-        this.idleTimer = setTimeout(() => {
-            this.log.info(`TypeScript compiler stopped after ${idleTimeoutSeconds}s idle`);
-            this.stop();
-        }, idleTimeoutSeconds * 1000);
-        this.idleTimer.unref();
-    }
-}
-
-export interface CompilerOptionsSummary {
-    /** In the compiler's own form (enum numbers, lib file names). */
-    options: CompilerOptionValues;
-    /** The effective `compilerOptions` in tsconfig.json form. */
-    json: Record<string, unknown>;
-    warnings: string[];
-}
-
-const MAX_CACHED_TSCONFIGS = 16;
-
-/** Everything the node asks of the TypeScript compiler. */
-export class TypeScriptCompilerService {
-    private readonly typeChecker: DeployTypeChecker;
-    private resolvedByText = new Map<string, Promise<ResolvedCompilerOptions>>();
-
-    constructor(private readonly client: TypeScriptCompilerClient, private readonly userDir: string) {
-        this.typeChecker = new DeployTypeChecker(userDir);
-    }
-
-    /** A node cannot run without its JavaScript, so a failure is tried once more with a new compiler process. */
-    async transpile(sources: string[], tsconfig: string | undefined): Promise<TranspiledSections> {
-        const attempt = () => this.client.use(async compiler =>
-            transpileSections(compiler, sources, (await this.resolve(compiler, tsconfig)).emitOptions));
-        try {
-            return await attempt();
-        } catch {
-            this.client.restart();
-            return attempt();
-        }
+    transpile(sources: string[], tsconfig: string | undefined): Promise<TranspiledSections> {
+        return this.use(async compiler => transpileSections(compiler, sources, (await this.resolve(compiler, tsconfig)).emitOptions));
     }
 
     resolveCompilerOptions(tsconfig: string | undefined): Promise<CompilerOptionsSummary> {
-        return this.client.use(async compiler => {
+        return this.use(async compiler => {
             const { options, json, warnings } = await this.resolve(compiler, tsconfig);
             return { options, json, warnings };
         });
     }
 
     collectModuleTypes(moduleName: string): Promise<ModuleTypeFiles> {
-        return this.client.use(compiler => collectModuleTypeFiles(compiler, moduleName, this.userDir));
+        return this.use(compiler => collectModuleTypeFiles(compiler, moduleName, this.userDir));
     }
 
-    typeCheck(
-        rev: string | undefined,
-        targets: TypeCheckRequestTarget[],
-        progress: (event: TypeCheckProgressEvent) => void,
-    ): Promise<ContextTypeRegistrySnapshot> {
-        return this.client.use(async compiler => this.typeChecker.check(
-            compiler,
-            rev,
+    typeCheck(rev: string | undefined, targets: TypeCheckRequestTarget[], progress: TypeCheckProgressSink): Promise<ContextTypeRegistrySnapshot> {
+        return this.use(async compiler => this.typeChecker.check(compiler, rev,
             await Promise.all(targets.map(async target => ({
                 instanceId: target.instanceId,
                 definition: target.definition,
                 compilerOptions: await this.resolve(compiler, target.tsconfig),
-            }))),
-            {
-                info: message => progress({ kind: 'info', message }),
-                nodeLog: (instanceId, message) => progress({ kind: 'nodeLog', instanceId, message }),
-                nodeWarn: (instanceId, message) => progress({ kind: 'nodeWarn', instanceId, message }),
-                nodeReport: (instanceId, message) => progress({ kind: 'nodeReport', instanceId, message }),
-            },
-        ));
+            }))), progress));
     }
 
     private resolve(compiler: TypeScriptCompiler, tsconfig: string | undefined): Promise<ResolvedCompilerOptions> {
@@ -244,10 +178,105 @@ export class TypeScriptCompilerService {
         if (!resolved) {
             if (this.resolvedByText.size >= MAX_CACHED_TSCONFIGS) this.resolvedByText.clear();
             resolved = resolveCompilerOptions(compiler, text, this.userDir);
-            resolved.catch(() => this.resolvedByText.delete(text));
+            resolved.catch(() => { if (this.resolvedByText.get(text) === resolved) this.resolvedByText.delete(text); });
             this.resolvedByText.set(text, resolved);
         }
         return resolved;
+    }
+}
+
+// Each Node-RED runtime owns its current generation; existing calls keep their captured instance.
+export class CompilerRuntime {
+    private current: Compiler | undefined;
+    private idleTimer: NodeJS.Timeout | undefined;
+    private stopped = false;
+    private readonly settings = new Map<string, CompilerSettings>();
+    private readonly retired = new Set<Compiler>();
+
+    constructor(
+        private readonly userDir: string,
+        private readonly log: CompilerLogger,
+        private readonly start = startTypeScriptCompiler,
+    ) {}
+
+    private retire(compiler: Compiler) {
+        this.retired.add(compiler);
+        compiler.retire();
+    }
+
+    private scheduleIdleStop() {
+        clearTimeout(this.idleTimer);
+        if (!this.current || this.current.busy || this.stopped) return;
+        const all = [...this.settings.values()];
+        if (all.some(s => s.keepAlive)) return;
+        const seconds = all.length ? Math.max(...all.map(s => s.idleTimeoutSeconds)) : DEFAULT_IDLE_TIMEOUT_SECONDS;
+        const compiler = this.current;
+        this.idleTimer = setTimeout(() => {
+            if (this.current !== compiler || compiler.busy) return;
+            this.current = undefined;
+            this.retire(compiler);
+            this.log.info(`TypeScript compiler stopped after ${seconds}s idle`);
+        }, seconds * 1000).unref();
+    }
+
+    private newCompiler(): Compiler {
+        const compiler = new Compiler(this.userDir, this.log, this.start,
+            () => this.scheduleIdleStop(), () => this.retired.delete(compiler));
+        return compiler;
+    }
+
+    private getCompiler() {
+        if (this.stopped) throw new Error('The TypeScript compiler runtime has shut down');
+        clearTimeout(this.idleTimer);
+        return this.current ??= this.newCompiler();
+    }
+
+    async transpile(sources: string[], tsconfig: string | undefined) {
+        const compiler = this.getCompiler();
+        try { return await compiler.transpile(sources, tsconfig); }
+        catch {
+            if (this.current === compiler) {
+                this.current = this.newCompiler();
+                this.retire(compiler);
+                this.log.warn('TypeScript compiler is being restarted');
+            }
+            return this.getCompiler().transpile(sources, tsconfig);
+        }
+    }
+
+    resolveCompilerOptions(text: string | undefined) {
+        return this.getCompiler().resolveCompilerOptions(text);
+    }
+
+    collectModuleTypes(name: string) {
+        return this.getCompiler().collectModuleTypes(name);
+    }
+
+    typeCheck(rev: string | undefined, targets: TypeCheckRequestTarget[], progress: TypeCheckProgressSink) {
+        return this.getCompiler().typeCheck(rev, targets, progress);
+    }
+
+    use<T>(operation: (compiler: TypeScriptCompiler) => Promise<T>) {
+        return this.getCompiler().use(operation);
+    }
+
+    registerSettings(id: string, value: CompilerSettings) {
+        this.settings.set(id, value);
+        this.scheduleIdleStop();
+    }
+
+    unregisterSettings(id: string) {
+        this.settings.delete(id);
+        this.scheduleIdleStop();
+    }
+
+    async shutdown() {
+        this.stopped = true;
+        clearTimeout(this.idleTimer);
+        if (this.current) this.retired.add(this.current);
+        this.current = undefined;
+        await Promise.all([...this.retired].map(c => c[Symbol.asyncDispose]()));
+        this.retired.clear();
     }
 }
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { it } from 'node:test';
-import { TypeScriptCompilerClient, TypeScriptCompiler } from '../src/compiler';
+import { CompilerRuntime, TypeScriptCompiler } from '../src/compiler';
 
 const log = { info() {}, warn() {} };
 function fakeCompiler() {
@@ -16,7 +16,7 @@ function fakeCompiler() {
 it('shares startup between overlapping operations and closes once on shutdown', async () => {
     const fake = fakeCompiler();
     let starts = 0;
-    const client = new TypeScriptCompilerClient('.', log, async () => { starts++; return fake.compiler; });
+    const client = new CompilerRuntime('.', log, async () => { starts++; return fake.compiler; });
     try {
         const values = await Promise.all([client.use(async c => c), client.use(async c => c)]);
         assert.equal(starts, 1);
@@ -28,7 +28,7 @@ it('shares startup between overlapping operations and closes once on shutdown', 
 it('allows a new startup after startup fails', async () => {
     const fake = fakeCompiler();
     let starts = 0;
-    const client = new TypeScriptCompilerClient('.', log, async () => {
+    const client = new CompilerRuntime('.', log, async () => {
         if (++starts === 1) throw new Error('startup failed');
         return fake.compiler;
     });
@@ -41,7 +41,7 @@ it('allows a new startup after startup fails', async () => {
 
 it('rejects pending work when its compiler exits', async () => {
     const fake = fakeCompiler();
-    const client = new TypeScriptCompilerClient('.', log, async () => fake.compiler);
+    const client = new CompilerRuntime('.', log, async () => fake.compiler);
     try {
         const work = client.use(async () => {
             fake.exit();
@@ -49,4 +49,41 @@ it('rejects pending work when its compiler exits', async () => {
         });
         await assert.rejects(work, /compiler process stopped/);
     } finally { await client.shutdown(); }
+});
+
+it('retires a failed generation without interrupting its other operation', async () => {
+    const generations: ReturnType<typeof fakeCompiler>[] = [];
+    const runtime = new CompilerRuntime('.', log, async () => {
+        const fake = fakeCompiler();
+        const generation = generations.length;
+        (fake.compiler as any).api = {
+            parseJsonConfigFileContent: async () => ({ options: {}, errors: [] }),
+            transpileModule: async (source: string) => {
+                if (generation === 0) throw new Error('transpile failed');
+                return { outputText: source, diagnostics: [] };
+            },
+        };
+        generations.push(fake);
+        return fake.compiler;
+    });
+    let release!: () => void;
+    let entered!: () => void;
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    const other = runtime.use(async () => {
+        entered();
+        await new Promise<void>(resolve => { release = resolve; });
+        return 42;
+    });
+    try {
+        await ready;
+        const results = await Promise.all([runtime.transpile(['one'], undefined), runtime.transpile(['two'], undefined)]);
+        assert.deepEqual(results.map(r => r.outputs), [['one'], ['two']]);
+        assert.equal(generations.length, 2, 'overlapping failures share one replacement');
+        assert.equal(generations[0].closes(), 0, 'old work still owns the old process');
+        release();
+        assert.equal(await other, 42);
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.equal(generations[0].closes(), 1);
+    } finally { release?.(); await runtime.shutdown(); }
+    assert.equal(generations[1].closes(), 1);
 });

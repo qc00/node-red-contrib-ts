@@ -1,5 +1,5 @@
 import ts from 'typescript5';
-import type { TypeScriptCompilerService } from '../../src/compiler';
+import type { CompilerRuntime } from '../../src/compiler';
 import { ContextScopeKeyTypes, EMPTY_CONTEXT_SCOPE_KEY_TYPES, generateContextDeclarations } from '../../src/context-types';
 import { generateEditorModuleDeclaration, ModuleLib, NODE_RED_ENV_DECLARATION_SOURCE, NODE_RED_SANDBOX_VALUE_DECLARATIONS } from '../../src/declarations';
 
@@ -21,7 +21,7 @@ export class EditorProgramFixture {
     readonly service: ts.LanguageService;
     private files = new Map<string, string>();
 
-    static async create(compiler: TypeScriptCompilerService, input: EditorProgramInput): Promise<EditorProgramFixture> {
+    static async create(compiler: CompilerRuntime, input: EditorProgramInput): Promise<EditorProgramFixture> {
         return new EditorProgramFixture(input, (await compiler.resolveCompilerOptions(input.tsconfig)).options);
     }
 
