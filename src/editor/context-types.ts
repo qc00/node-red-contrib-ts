@@ -7,10 +7,20 @@ declare const $: any;
 export class EditorContextTypeStore {
     private registry = new ContextTypeRegistry();
     private checkpointed: ContextTypeRegistrySnapshot | undefined;
+    /** Invalidates pending refreshes when local state or the edit session changes. */
+    private stateVersion = 0;
+    /** Identifies the newest refresh request so older responses cannot overwrite it. */
+    private latestRequest = 0;
+    /** Prevents server snapshots from replacing the local overlay while a dialog is open. */
+    private editing = false;
 
     /** Replaces the registry with the server's, unless the server has since deployed other flows than the editor holds. */
     refresh() {
+        if (this.editing) return;
+        const stateVersion = this.stateVersion;
+        const request = ++this.latestRequest;
         $.getJSON('typescript-node/context-types').done((snapshot: ContextTypeRegistrySnapshot) => {
+            if (this.editing || stateVersion !== this.stateVersion || request !== this.latestRequest) return;
             const editorRev = RED.nodes.version();
             if (snapshot.rev && editorRev && snapshot.rev !== editorRev) return;
             this.registry = new ContextTypeRegistry(snapshot);
@@ -19,15 +29,25 @@ export class EditorContextTypeStore {
 
     /** Remembers the types as they are when an edit dialog opens. */
     checkpoint() {
+        this.editing = true;
+        this.stateVersion++;
         this.checkpointed = JSON.parse(JSON.stringify(this.registry));
     }
 
     /** Discards what was inferred from an edit that was cancelled. */
     rollback() {
         if (this.checkpointed) this.registry = new ContextTypeRegistry(this.checkpointed);
+        this.commit();
+    }
+
+    commit() {
+        this.editing = false;
+        this.checkpointed = undefined;
+        this.stateVersion++;
     }
 
     replaceContributor(nodeId: string, flowId: string, sets: InferredContextSet[]) {
+        this.stateVersion++;
         this.registry.replaceContributor(nodeId, flowId, sets);
     }
 

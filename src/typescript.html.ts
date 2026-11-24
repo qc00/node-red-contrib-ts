@@ -813,6 +813,7 @@ RED.nodes.registerType("typescript", {
         var node = this;
         var noerr = 0;
         cancelContextInference();
+        contextTypeStore.commit();
         $("#node-input-noerr").val(0);
 
         // Transfer old script property to func for backward compatibility

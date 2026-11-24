@@ -89,9 +89,14 @@ RED.nodes.registerType("typescript-config", {
         });
 
         let warningsTimer: any;
+        let latestWarningRequest = 0;
+        let closed = false;
+        node.stopWarnings = () => { closed = true; latestWarningRequest++; clearTimeout(warningsTimer); };
         const showWarnings = () => {
-            if (!node.tsconfigEditor) return;
+            if (closed || !node.tsconfigEditor) return;
+            const request = ++latestWarningRequest;
             requestCompilerOptions(node.tsconfigEditor.getValue()).then(response => {
+                if (closed || request !== latestWarningRequest) return;
                 const list = $("#node-config-tsconfig-warnings").empty();
                 for (const warning of response.warnings) {
                     $("<li/>").text(warning).appendTo(list);
@@ -107,11 +112,13 @@ RED.nodes.registerType("typescript-config", {
     },
     oneditsave: function (this: any) {
         $("#node-config-input-tsconfig").val(this.tsconfigEditor.getValue());
+        this.stopWarnings();
         this.tsconfigEditor.destroy();
         delete this.tsconfigEditor;
         this.restoreJsonDiagnostics();
     },
     oneditcancel: function (this: any) {
+        this.stopWarnings();
         this.tsconfigEditor.destroy();
         delete this.tsconfigEditor;
         this.restoreJsonDiagnostics();

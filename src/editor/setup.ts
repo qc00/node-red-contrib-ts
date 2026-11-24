@@ -132,6 +132,8 @@ export function removeExtraLib(filePath: string) {
 
 const CONTEXT_INFERENCE_DELAY_MS = 800;
 let contextInferenceTimer: any;
+/** Invalidates worker results when inference is rescheduled or the dialog closes. */
+let inferenceGeneration = 0;
 
 async function quickInfoTextAt(editor: any, offset: number): Promise<string | undefined> {
     const model = editor.getModel();
@@ -143,13 +145,16 @@ async function quickInfoTextAt(editor: any, offset: number): Promise<string | un
 }
 
 /** Re-derives what the open node stores in context from its three code tabs and refreshes the `get` types. */
-async function inferOpenNodeContextSets(node: any) {
+async function inferOpenNodeContextSets(node: any, generation: number) {
     const sets: any[] = [];
-    for (const editor of [node.initEditor, node.editor, node.finalizeEditor]) {
+    const editors = [node.initEditor, node.editor, node.finalizeEditor];
+    const texts = editors.map(editor => editor?.getValue());
+    for (const editor of editors) {
         if (!editor || editor.type !== "monaco") return;
         sets.push(...await inferContextSetsWithQuickInfo(editor.getValue(), offset => quickInfoTextAt(editor, offset)));
     }
-    if (window.currentNodeInstance !== node || !node.editor) return;
+    if (generation !== inferenceGeneration || window.currentNodeInstance !== node || !node.editor
+        || editors.some((editor, index) => editor.getValue() !== texts[index])) return;
     contextTypeStore.replaceContributor(node.id, node.z || "", sets);
     applyContextDeclarations(monacoTypeScriptApi());
 }
@@ -158,9 +163,10 @@ async function inferOpenNodeContextSets(node: any) {
 // re-validates every open model, so inference waits for a pause in typing.
 export function scheduleContextInference(node: any) {
     clearTimeout(contextInferenceTimer);
+    const generation = ++inferenceGeneration;
     contextInferenceTimer = setTimeout(() => {
-        inferOpenNodeContextSets(node).catch(error => console.warn("[TS] Context type inference failed:", error));
+        inferOpenNodeContextSets(node, generation).catch(error => console.warn("[TS] Context type inference failed:", error));
     }, CONTEXT_INFERENCE_DELAY_MS);
 }
 
-export function cancelContextInference() { clearTimeout(contextInferenceTimer); }
+export function cancelContextInference() { inferenceGeneration++; clearTimeout(contextInferenceTimer); }
