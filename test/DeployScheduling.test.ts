@@ -53,3 +53,27 @@ it('recovers after a failed batch', async () => {
     assert.equal(warnings.length, 1);
     assert.equal(checks.registry.rev, 'two');
 });
+
+it('does not send stale reports to a node replaced during a batch', async () => {
+    let progress!: Parameters<TypeCheckRunner>[2];
+    let release!: () => void;
+    const warnings: string[] = [];
+    const checks = new DeployTypeCheckCoordinator(async (rev, _targets, sink) => {
+        progress = sink;
+        await new Promise<void>(resolve => { release = resolve; });
+        return empty(rev);
+    }, log);
+    const registration = {
+        definition: { id: 'n', flowId: 'f', libs: [], declare: '', initialize: '', func: '', finalize: '' },
+        tsconfig: undefined, log() {}, warn: (message: string) => warnings.push(message),
+    };
+    checks.register('n', registration);
+    const done = checks.schedule('one');
+    await tick();
+    checks.unregister('n');
+    checks.register('n', { ...registration });
+    progress.nodeReport('n', 'obsolete');
+    release();
+    await done;
+    assert.deepEqual(warnings, []);
+});

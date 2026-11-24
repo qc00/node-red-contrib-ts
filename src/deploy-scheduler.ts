@@ -87,12 +87,16 @@ export class DeployTypeCheckCoordinator {
             tsconfig: registration.tsconfig,
         }));
 
+        const currentRegistration = (id: string) => {
+            const registration = batch.get(id);
+            return !this.pending && this.registrations.get(id) === registration ? registration : undefined;
+        };
         const snapshot = await this.runner(rev, targets, {
             info: message => this.log.info(message),
-            nodeLog: (id, message) => batch.get(id)?.log(message),
-            nodeWarn: (id, message) => batch.get(id)?.warn(message),
+            nodeLog: (id, message) => currentRegistration(id)?.log(message),
+            nodeWarn: (id, message) => currentRegistration(id)?.warn(message),
             nodeReport: (id, message) => {
-                const registration = batch.get(id);
+                const registration = currentRegistration(id);
                 if (registration) this.report(registration, message);
             },
         });
