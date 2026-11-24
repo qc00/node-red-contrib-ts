@@ -1,3 +1,4 @@
+import { resolve as resolvePath } from 'node:path';
 import type { API } from 'typescript/async';
 import type { ContextTypeRegistrySnapshot } from './context-types';
 import type { TypeCheckRequestTarget } from './deploy-scheduler';
@@ -13,6 +14,8 @@ export interface TypeScriptCompiler {
     readonly ast: typeof import('typescript/ast');
     /** Settles when the compiler process has ended, for whatever reason. */
     readonly exited: Promise<void>;
+    /** Parses tsconfig text with TypeScript's native JSONC parser. */
+    readConfigText(text: string): Promise<unknown>;
     /** Resident memory of the compiler process in bytes, where the platform makes it readable. */
     residentMemory(): Promise<number | undefined>;
     close(): Promise<void>;
@@ -33,7 +36,14 @@ export async function startTypeScriptCompiler(currentDirectory: string): Promise
         import('typescript/fs'),
         import('typescript/ast'),
     ]);
-    const api = new apiModule.API({ cwd: currentDirectory });
+    const configTexts = new Map<string, string>();
+    let nextConfig = 0;
+    const os: typeof fs.serverFS.useOS = fs.serverFS.useOS;
+    const api = new apiModule.API({ cwd: currentDirectory, fs: {
+        directoryExists: os, fileExists: os, getAccessibleEntries: os,
+        realpath: os, stat: os, writeFile: os, removeFile: os,
+        readFile: file => configTexts.get(file.replace(/\\/g, '/')) ?? os,
+    } });
     // Forces the process to start now, so a failure to start surfaces here.
     await api.parseJsonConfigFileContent({ files: [] }, { configDirectory: currentDirectory });
     const child: CompilerChildProcess | undefined = (api as any).client?.process;
@@ -45,6 +55,15 @@ export async function startTypeScriptCompiler(currentDirectory: string): Promise
         fs,
         ast,
         exited,
+        readConfigText: async text => {
+            const file = resolvePath(currentDirectory, `.__node_red_ts_config_${++nextConfig}.json`).replace(/\\/g, '/');
+            configTexts.set(file, text);
+            try {
+                const result = await api.readConfigFile(file);
+                if (result.error) throw new Error(result.error.text);
+                return result.config;
+            } finally { configTexts.delete(file); }
+        },
         residentMemory: async () => {
             const pid = child?.pid;
             if (!pid || process.platform !== 'linux') return undefined;

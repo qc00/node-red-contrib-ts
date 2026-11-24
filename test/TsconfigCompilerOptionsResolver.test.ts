@@ -58,3 +58,39 @@ describe('resolveCompilerOptions', () => {
         assert.notEqual(a.key, (await resolveCompilerOptions('', '/base')).key);
     });
 });
+
+
+describe('native config text parsing', () => {
+    let compiler: Promise<TypeScriptCompiler> | undefined;
+    after(async () => (await compiler)?.close());
+    const native = async () => compiler ??= startTypeScriptCompiler(process.cwd());
+
+    it('accepts comments and trailing commas through TypeScript itself', async () => {
+        assert.deepEqual(
+            await (await native()).readConfigText('{/* comment */ "compilerOptions": {"strict": true,},}'),
+            { compilerOptions: { strict: true } },
+        );
+    });
+
+    it('rejects malformed JSONC without contaminating later or concurrent reads', async () => {
+        const c = await native();
+        await assert.rejects(c.readConfigText('{} /* unfinished'));
+        const [strict, loose] = await Promise.all([
+            c.readConfigText('{"compilerOptions":{"strict":true}}'),
+            c.readConfigText('{"compilerOptions":{"strict":false}}'),
+        ]);
+        assert.deepEqual(strict, { compilerOptions: { strict: true } });
+        assert.deepEqual(loose, { compilerOptions: { strict: false } });
+    });
+
+    it('does not process extends or include while reading config text', async () => {
+        const resolved = await resolveWith(await native(),
+            '{"extends":"./does-not-exist.json","include":["missing/**/*.ts"],"compilerOptions":{"strict":true}}',
+            process.cwd(),
+        );
+        assert.equal(resolved.options.strict, true);
+        assert.match(resolved.warnings.join('\n'), /"extends" is ignored/);
+        assert.match(resolved.warnings.join('\n'), /"include" is ignored/);
+        assert.doesNotMatch(resolved.warnings.join('\n'), /Cannot read file/);
+    });
+});
