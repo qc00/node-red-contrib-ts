@@ -87,3 +87,22 @@ it('retires a failed generation without interrupting its other operation', async
     } finally { release?.(); await runtime.shutdown(); }
     assert.equal(generations[1].closes(), 1);
 });
+
+it('starts a new process for the next operation after the process exits by itself', async () => {
+    const fakes: ReturnType<typeof fakeCompiler>[] = [];
+    const warnings: string[] = [];
+    const client = new CompilerRuntime('.', { info() {}, warn: message => { warnings.push(message); } }, async () => {
+        const fake = fakeCompiler();
+        fakes.push(fake);
+        return fake.compiler;
+    });
+    client.registerSettings('config', { keepAlive: true, idleTimeoutSeconds: 30 });
+    try {
+        assert.equal(await client.use(async c => c), fakes[0].compiler);
+        fakes[0].exit();
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.equal(await client.use(async c => c), fakes[1].compiler);
+        assert.deepEqual(warnings, ['TypeScript compiler process stopped unexpectedly']);
+    } finally { await client.shutdown(); }
+    assert.equal(fakes.length, 2);
+});

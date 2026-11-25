@@ -119,6 +119,7 @@ export class Compiler {
         private readonly start = startTypeScriptCompiler,
         private readonly onIdle: () => void = () => {},
         private readonly onDisposed: () => void = () => {},
+        private readonly onExitedUnexpectedly: () => void = () => {},
     ) {
         this.typeChecker = new DeployTypeChecker(userDir);
     }
@@ -134,7 +135,14 @@ export class Compiler {
                 const starting = this.start(this.userDir);
                 this.starting = starting;
                 starting.then(
-                    () => this.log.info(`TypeScript compiler started in ${Date.now() - startedAt}ms`),
+                    compiler => {
+                        this.log.info(`TypeScript compiler started in ${Date.now() - startedAt}ms`);
+                        compiler.exited.then(() => {
+                            if (this.retired) return;
+                            this.log.warn('TypeScript compiler process stopped unexpectedly');
+                            this.onExitedUnexpectedly();
+                        });
+                    },
                     () => { if (this.starting === starting) this.starting = undefined; },
                 );
             }
@@ -240,7 +248,13 @@ export class CompilerRuntime {
 
     private newCompiler(): Compiler {
         const compiler = new Compiler(this.userDir, this.log, this.start,
-            () => this.scheduleIdleStop(), () => this.retired.delete(compiler));
+            () => this.scheduleIdleStop(),
+            () => this.retired.delete(compiler),
+            () => {
+                if (this.current !== compiler) return;
+                this.current = undefined;
+                this.retire(compiler);
+            });
         return compiler;
     }
 

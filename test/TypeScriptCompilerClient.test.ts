@@ -66,6 +66,20 @@ describe('TypeScriptCompilerClient', () => {
         assert.equal(count(log, 'stopped after'), 0);
     });
 
+    it('parses tsconfigs and type-checks again after the compiler process was killed', async () => {
+        const { client, service, log } = newService();
+        client.registerSettings('config', { keepAlive: true, idleTimeoutSeconds: 30 });
+        await service.resolveCompilerOptions('');
+        await client.use(async compiler => { process.kill((compiler.api as any).client.process.pid, 'SIGKILL'); });
+        await wait(200);
+        const resolved = await service.resolveCompilerOptions('{ "compilerOptions": { "strict": true } }');
+        assert.equal(resolved.options.strict, true);
+        const definition = { id: 'n', flowId: 'flow1', libs: [], declare: '', initialize: '', func: 'return msg;', finalize: '' };
+        await service.typeCheck('rev1', [{ instanceId: 'n', definition, tsconfig: undefined }], { info() {}, nodeLog() {}, nodeWarn() {}, nodeReport() {} });
+        assert.equal(count(log, 'TypeScript compiler process stopped unexpectedly'), 1);
+        assert.equal(count(log, 'TypeScript compiler started in'), 2);
+    });
+
     for (const signal of ['SIGKILL', 'SIGTERM'] as const) {
         // On SIGTERM the compiler stays up for a while but fails every request.
         it(`still transpiles after the compiler process got ${signal}`, async () => {
