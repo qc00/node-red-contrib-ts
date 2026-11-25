@@ -885,6 +885,10 @@ RED.nodes.registerType("typescript", {
         node.declareEditor.destroy();
         delete node.declareEditor;
     },
+    // The Delete button of the edit dialog closes it without calling oneditcancel.
+    oneditdelete: function (this: any) {
+        if (this.editor) this._def.oneditcancel.call(this);
+    },
     oneditresize: function (this: any, size: any) {
         var rows = $("#dialog-form>div:not(.node-text-editor-row)");
         var height = $("#dialog-form").height() || 0;
