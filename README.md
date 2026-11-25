@@ -1,6 +1,6 @@
 # Node-RED TypeScript Node
 
-A fast TypeScript execution node for Node-RED with Monaco editor, type checking, and multi-tab configuration.
+Automatically compiles TypeScript and execute them like stock function nodes but with enhanced type checking.
 
 ## Installation
 
@@ -11,24 +11,23 @@ Or via npm:
 npm install node-red-contrib-ts
 ```
 
-## TypeScript Node
+## Enhancements over Function Nodes
 
-Execute TypeScript code directly in your Node-RED flows with full type checking, modern JavaScript features, and multi-tab editor interface similar to the standard Function node.
-
-### Features
-
-- **Monaco Editor** - Same editor as VS Code with syntax highlighting and IntelliSense
-- **TypeScript Support** - Full TypeScript compilation with error checking
-- **Multi-Tab Interface** - Separate tabs for initialization, main function, and cleanup code
+- **TypeScript**
+  - Full TypeScript compilation with error & type checking
+  - Type declarations for the Node RED APIs
+  - Includes types for imported modules if correctly installed
+  - Tracks types of data saved into contexts
+  - Custom `tsconfig`
 - **Custom Type Declarations** - Define your own TypeScript interfaces and types
-- **External Module Support** - Import npm modules with type safety
 - **Async/Await Ready** - Your code runs in an async function context
-- **Multiple Outputs** - Route messages to different outputs
 - **Two Execution Modes** - Function mode (fast) or VM mode (secure)
 
 ![TypeScript Node](screenshots/node.png)
 
 ![Monaco Editor with IntelliSense](screenshots/intelliSense.png)
+
+![Setup Configuration](screenshots/props2.png)
 
 ### Performance Benchmark
 
@@ -39,20 +38,7 @@ Benchmark results for 500,000 executions:
 
 ![Performance Benchmark](screenshots/benchmark.png)
 
-### Available Context
-
-Your TypeScript code has access to these variables:
-
-- `msg` - The incoming message object
-- `node` - The current node instance for logging
-- `RED` - Node-RED API
-- `global` - Global context storage
-- `env` - Environment variables via `env.get('VAR_NAME')`
-- `fs`, `path`, `os`, `crypto`, `util`, `Buffer` - Node.js modules
-- `fetch` - HTTP client for API calls
-- `process` - Process information
-
-### Usage
+### Example
 
 **API call with custom types:**
 ```typescript
@@ -103,25 +89,75 @@ try {
 }
 ```
 
-### Configuration
+### Type Checking
 
-The TypeScript node provides the same functionality as the standard Function node but with TypeScript support and enhanced features:
+Code is checked in the editor as you type and again on the server after every deploy.
 
-#### Editor Tabs
+This is because the type-checker in the Monaco Editor is part of the hosting Node RED distribution
+and likely embeds an older version of TypeScript.
+Checking again on the server also catches changes directly made to the flow file or after dependency upgrades.
 
-- **On Start** - Code executed once when the node starts (initialization)
-- **On Message** - Main function code executed for each incoming message  
-- **On Stop** - Code executed when the node is stopped or redeployed (cleanup)
+The deploy-time check never stops a node from running: problems are reported as warnings on the node.
 
-#### Setup Tab
+#### tsconfig
 
-- **Type Declarations** - Define custom TypeScript interfaces and types
-- **External Modules** - Import npm modules with automatic type definitions
-- **Outputs** - Number of outputs
-- **Timeout** - Execution timeout in milliseconds
-- **Execution Mode** - Function mode (faster) or VM mode (more secure)
+Add a `typescript-config` node from the **tsconfig** field on the Setup tab and write it like a `tsconfig.json` (comments and trailing commas are allowed):
 
-![Setup Configuration](screenshots/props2.png)
+```jsonc
+{
+    "compilerOptions": {
+        "strict": true,
+        "noUncheckedIndexedAccess": true
+    }
+}
+```
+
+Only `compilerOptions` is used, and options that control output files are ignored.
+
+#### Module types
+
+A module imported as variable `y` is typed as if the code started with `import * as y from 'module'`, so its types are available as `y.SomeType`:
+
+```typescript
+// Modules: path as "path"
+const parsed: path.ParsedPath = path.parse(msg.filename);
+```
+
+For a package with a default export, the import variable `y` reflects the value & type of that default export.
+
+In the editor, types of npm modules appear if the relevant package installed on the Node RED server
+and a node using it has been deployed once.
+
+#### Typed context
+
+The type of every value stored with `context.set`, `flow.set` or `global.set` under a literal key is tracked,
+across all typescript nodes, and `get` returns it:
+
+```typescript
+// node A
+flow.set('lastReading', { celsius: 21.5, at: Date.now() });
+
+// node B, same flow
+const reading = flow.get('lastReading');   // { celsius: number; at: number } | undefined
+```
+
+If a key is set with different types in different places, `get` returns their union,
+so only the common fields can be used without a check.
+
+Keys that are not tracked (e.g. set by other node types) are untyped, as before;
+use `flow.get<MyType>('key')` to state the type explicitly.
+
+The editor shows the types of the last deploy and updates them for the node being edited as you type.
+
+#### The TypeScript compiler
+
+The node uses TypeScript 7 native `tsc`, which runs as a separate process that starts when it is first needed and is shared by all `typescript` nodes.
+The type check is async.
+
+A `typescript-config` node controls the process behaviour.
+
+The editor checks with the TypeScript version built into Node-RED's code editor, 
+so the editor and the deploy-time check can differ on newer language features.
 
 ### Editor Features
 
@@ -132,11 +168,6 @@ The TypeScript node provides the same functionality as the standard Function nod
 - **Template Code** - Helpful starter template for new nodes
 
 ![TypeScript Validation](screenshots/typescript-validation.png)
-
-The editor provides comprehensive TypeScript support with:
-- **Type checking** for all Node-RED context variables (`msg`, `node`, `env`, etc.)
-- **Automatic filtering** of context-specific errors (await/return statements work seamlessly)
-- **Real-time validation** as you type with precise error messages and suggestions
 
 ## License
 

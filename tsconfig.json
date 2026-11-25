@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2019",
-    "module": "NodeNext",
+    "module": "preserve",
     "outDir": "./dist",
     "rootDir": "./src",
     "strict": true,
@@ -9,7 +9,7 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "noEmit": true,
-    "moduleResolution": "NodeNext",
+    "moduleResolution": "bundler",
     "noImplicitAny": false
   },
   "include": ["src/**/*"],
