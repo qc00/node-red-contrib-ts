@@ -3,52 +3,60 @@ import { ContextTypeRegistry, ContextTypeRegistrySnapshot, InferredContextSet, g
 declare const RED: any;
 declare const $: any;
 
+type EditedContextSets = Map<string, { flowId: string; sets: InferredContextSet[] }>;
+
 /** The as-deployed context key types, overlaid with what the user has edited since. */
 export class EditorContextTypeStore {
     private registry = new ContextTypeRegistry();
-    private checkpointed: ContextTypeRegistrySnapshot | undefined;
-    /** Invalidates pending refreshes when local state or the edit session changes. */
-    private stateVersion = 0;
-    /** Identifies the newest refresh request so older responses cannot overwrite it. */
+    /** What the user has edited since the latest refresh was requested, laid over the server's answer. */
+    private edits: EditedContextSets = new Map();
     private latestRequest = 0;
-    /** Prevents server snapshots from replacing the local overlay while a dialog is open. */
-    private editing = false;
+    private checkpointed: { registry: ContextTypeRegistrySnapshot; edits: EditedContextSets; request: number } | undefined;
+    /** A server answer that arrived while an edit dialog was open. */
+    private deferred: ContextTypeRegistrySnapshot | undefined;
 
     /** Replaces the registry with the server's, unless the server has since deployed other flows than the editor holds. */
     refresh() {
-        if (this.editing) return;
-        const stateVersion = this.stateVersion;
         const request = ++this.latestRequest;
+        this.edits.clear();
+        this.deferred = undefined;
         $.getJSON('typescript-node/context-types').done((snapshot: ContextTypeRegistrySnapshot) => {
-            if (this.editing || stateVersion !== this.stateVersion || request !== this.latestRequest) return;
+            if (request !== this.latestRequest) return;
             const editorRev = RED.nodes.version();
             if (snapshot.rev && editorRev && snapshot.rev !== editorRev) return;
-            this.registry = new ContextTypeRegistry(snapshot);
+            if (this.checkpointed) this.deferred = snapshot;
+            else this.apply(snapshot);
         });
     }
 
     /** Remembers the types as they are when an edit dialog opens. */
     checkpoint() {
-        this.editing = true;
-        this.stateVersion++;
-        this.checkpointed = JSON.parse(JSON.stringify(this.registry));
+        this.checkpointed = { registry: JSON.parse(JSON.stringify(this.registry)), edits: new Map(this.edits), request: this.latestRequest };
     }
 
     /** Discards what was inferred from an edit that was cancelled. */
     rollback() {
-        if (this.checkpointed) this.registry = new ContextTypeRegistry(this.checkpointed);
+        if (this.checkpointed) {
+            this.registry = new ContextTypeRegistry(this.checkpointed.registry);
+            this.edits = this.checkpointed.request === this.latestRequest ? this.checkpointed.edits : new Map();
+        }
         this.commit();
     }
 
     commit() {
-        this.editing = false;
         this.checkpointed = undefined;
-        this.stateVersion++;
+        if (this.deferred) this.apply(this.deferred);
+        this.deferred = undefined;
     }
 
     replaceContributor(nodeId: string, flowId: string, sets: InferredContextSet[]) {
-        this.stateVersion++;
+        this.edits.set(nodeId, { flowId, sets });
         this.registry.replaceContributor(nodeId, flowId, sets);
+    }
+
+    private apply(snapshot: ContextTypeRegistrySnapshot) {
+        this.registry = new ContextTypeRegistry(snapshot);
+        for (const [nodeId, { flowId, sets }] of this.edits) this.registry.replaceContributor(nodeId, flowId, sets);
     }
 
     declarationsFor(nodeId: string, flowId: string): string {
